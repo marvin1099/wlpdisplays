@@ -1,0 +1,181 @@
+#!/usr/bin/env python3
+
+import subprocess
+import re
+import os
+import sys
+import json
+from collections import defaultdict
+
+def error(msg):
+    print(f"[ERROR] {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def warn(msg):
+    print(f"[WARN] {msg}", file=sys.stderr)
+
+
+def check_display_server():
+    wayland_display = os.environ.get("WAYLAND_DISPLAY")
+    x_display = os.environ.get("DISPLAY")
+
+    if wayland_display:
+        return "wayland"
+    elif x_display:
+        warn("Running under X11 (DISPLAY detected).\nThis script is meant for Wayland.")
+        return "x11"
+    else:
+        warn("No display server variables detected.\nPossibly running headless.")
+        return "unknown"
+
+
+def get_wayland_info():
+    """Run 'wayland-info' safely and return its output."""
+    try:
+        return subprocess.check_output(["wayland-info"], text=True, stderr=subprocess.STDOUT)
+    except FileNotFoundError:
+        error("'wayland-info' not found.\nPlease install it (e.g., 'sudo pacman -S wayland-utils').")
+    except subprocess.CalledProcessError as e:
+        error(f"'wayland-info' failed with exit code {e.returncode}:\n{e.output.strip()}")
+
+
+def parse_wl_output_line(line, current_wl):
+    """Parse a single line from wl_output section."""
+    if m := re.match(r"name: (\S+)", line):
+        current_wl["name"] = m.group(1)
+    elif m := re.match(r"description: (.+)", line):
+        current_wl["description"] = m.group(1)
+    elif m := re.match(r"x: (\d+), y: (\d+), scale: (\d+),", line):
+        current_wl.update(x=int(m[1]), y=int(m[2]), scale=int(m[3]))
+    elif m := re.match(r"physical_width: (\d+) mm, physical_height: (\d+) mm,", line):
+        current_wl.update(physical_width_mm=int(m[1]), physical_height_mm=int(m[2]))
+    elif m := re.match(r"width: (\d+) px, height: (\d+) px, refresh: ([\d.]+) Hz,", line):
+        current_wl.update(width_px=int(m[1]), height_px=int(m[2]), refresh_hz=float(m[3]))
+    return current_wl
+
+
+def parse_xdg_output_line(line, current_xdg):
+    """Parse a single line from xdg_output_v1 section."""
+    if m := re.match(r"name: '(.+)'", line):
+        current_xdg["name"] = m.group(1)
+    elif m := re.match(r"description: '(.+)'", line):
+        current_xdg["description"] = m.group(1)
+    elif m := re.match(r"logical_x: (-?\d+), logical_y: (-?\d+)", line):
+        current_xdg.update(logical_x=int(m[1]), logical_y=int(m[2]))
+    elif m := re.match(r"logical_width: (\d+), logical_height: (\d+)", line):
+        current_xdg.update(logical_width=int(m[1]), logical_height=int(m[2]))
+    return current_xdg
+
+
+def get_wayland_outputs():
+    output = get_wayland_info()
+
+    wl_outputs = defaultdict(dict)
+    xdg_outputs = defaultdict(dict)
+
+    current_wl = None
+    wl_name = None
+
+    current_xdg = None
+    xdg_name = None
+
+    def flush_wl():
+        nonlocal current_wl, wl_name
+        if current_wl and wl_name:
+            wl_outputs[wl_name].update(current_wl)
+        current_wl = None
+        wl_name = None
+
+    def flush_xdg():
+        nonlocal current_xdg, xdg_name
+        if current_xdg and xdg_name:
+            xdg_outputs[xdg_name].update(current_xdg)
+        current_xdg = None
+        xdg_name = None
+
+    for line in output.splitlines():
+        line = line.strip()
+
+        # Start of a wl_output block
+        if line.startswith("interface: 'wl_output'"):
+            flush_wl()
+            current_wl = {}
+            continue
+
+        # Start of an xdg_output block
+        if line.startswith("xdg_output_v1"):
+            flush_xdg()
+            current_xdg = {}
+            continue
+
+        # --- wl_output fields ---
+        if current_wl is not None:
+            current_wl = parse_wl_output_line(line, current_wl)
+            if "name" in current_wl:
+                wl_name = current_wl["name"]
+
+        if current_xdg is not None:
+            current_xdg = parse_xdg_output_line(line, current_xdg)
+            if "name" in current_xdg:
+                xdg_name = current_xdg["name"]
+
+    # Flush at EOF
+    flush_wl()
+    flush_xdg()
+
+    if not wl_outputs and not xdg_outputs:
+        warn("No monitors detected.\nEnsure you're running under Wayland with active outputs.")
+
+    # Merge wl_output and xdg_output data by "name"
+    merged = []
+    for name, wl_data in wl_outputs.items():
+        merged_entry = dict(wl_data)
+        if name in xdg_outputs:
+            merged_entry.update(xdg_outputs[name])  # add logical coords/sizes
+
+            scale = merged_entry.get("scale")
+            scale_x = None
+            scale_y = None
+            # calculate scale if logical size is available
+            if "width_px" in merged_entry and "logical_width" in merged_entry:
+                scale_x = merged_entry["width_px"] / merged_entry["logical_width"]
+            if "height_px" in merged_entry and "logical_height" in merged_entry:
+                scale_y = merged_entry["height_px"] / merged_entry["logical_height"]
+            if bool(scale_x) != bool(scale_y):
+                merged_entry["scale"] = scale_x if scale_x else scale_y
+            elif scale_x and scale_y:
+                merged_entry["scale"] = (scale_x + scale_y) / 2
+                merged_entry["scale_x"] = scale_x
+                merged_entry["scale_y"] = scale_y
+
+            if scale:
+                merged_entry["int_scale"] = scale
+
+        merged.append(merged_entry)
+
+    return merged
+
+
+def main():
+    args = sys.argv
+    helpme = "--help" in args or "-h" in args
+    if helpme:
+        print("-h  --help     To print this help and exit")
+        print("-c  --compact  To print the output json in one line")
+        print("-s  --sort     To sort the monitors by top-left to bottom-right")
+        exit()
+
+    check_display_server()
+    monitors = get_wayland_outputs()
+    sort = "--sort" in args or "-s" in args
+    if sort:
+        monitors.sort(key=lambda m: (m.get("y", 0), m.get("x", 0)))
+
+    compact = "--compact" in args or "-c" in args
+    indent = None if compact else 2
+    print(json.dumps(monitors, indent=indent))
+
+
+if __name__ == "__main__":
+    main()
