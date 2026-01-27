@@ -111,6 +111,12 @@ def get_wayland_outputs():
             current_xdg = {}
             continue
 
+        # A new interface can also flush the buffer
+        if line.startswith("interface: "):
+            flush_xdg()
+            flush_wl()
+            continue
+
         # --- wl_output fields ---
         if current_wl is not None:
             current_wl = parse_wl_output_line(line, current_wl)
