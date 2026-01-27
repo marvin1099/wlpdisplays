@@ -46,7 +46,7 @@ def parse_wl_output_line(line, current_wl):
         current_wl["name"] = m.group(1)
     elif m := re.match(r"description: (.+)", line):
         current_wl["description"] = m.group(1)
-    elif m := re.match(r"x: (\d+), y: (\d+), scale: (\d+),", line):
+    elif m := re.match(r"x: (-?\d+), y: (-?\d+), scale: (\d+),", line):
         current_wl.update(x=int(m[1]), y=int(m[2]), scale=int(m[3]))
     elif m := re.match(r"physical_width: (\d+) mm, physical_height: (\d+) mm,", line):
         current_wl.update(physical_width_mm=int(m[1]), physical_height_mm=int(m[2]))
@@ -57,7 +57,9 @@ def parse_wl_output_line(line, current_wl):
 
 def parse_xdg_output_line(line, current_xdg):
     """Parse a single line from xdg_output_v1 section."""
-    if m := re.match(r"name: '(.+)'", line):
+    if m := re.match(r"output: (\d+)", line):
+        current_xdg["output"] = int(m.group(1))
+    elif m := re.match(r"name: '(.+)'", line):
         current_xdg["name"] = m.group(1)
     elif m := re.match(r"description: '(.+)'", line):
         current_xdg["description"] = m.group(1)
