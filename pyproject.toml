@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wlpdisplays"
+dynamic = ["version"]
+description = "Print connected Wayland monitor information as JSON by parsing wayland-info output."
+readme = "README.md"
+requires-python = ">=3.9"
+license = "AGPL-3.0-only"
+authors = [{ name = "marvin1099" }]
+keywords = ["wayland", "monitor", "display", "json"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: System :: Hardware",
+]
+
+[project.urls]
+Repository = "https://codeberg.org/marvin1099/wlpdisplays"
+
+[project.scripts]
+wlpdisplays = "wlpdisplays:main"
+
+[tool.setuptools]
+py-modules = ["wlpdisplays"]
+
+[tool.setuptools.dynamic]
+version = { attr = "wlpdisplays.__version__" }
