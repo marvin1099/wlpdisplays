@@ -16,6 +16,7 @@ This is a personal tool I wanted and I'm sharing it in case it's useful to other
 - Sort monitors top-left to bottom-right
 - Compact one-line output
 - `--stdin` mode for debugging with pre-recorded `wayland-info` output
+- Auto-pulls a precompiled `wayland-info` from the Debian repos when none is installed, with three pull modes (see below)
 
 ---
 
@@ -68,13 +69,41 @@ wlpdisplays [options]
 | `-s, --sort`       | Sort monitors top-left to bottom-right                     |
 | `-v, --version`    | Show version and exit                                      |
 | `-i, --stdin`      | Read raw `wayland-info` data from stdin instead of running `wayland-info` |
-| `-w, --wayland-info-path PATH` | Path to the `wayland-info` binary (default: `wayland-info`)   |
+| `-w, --wayland-info-path PATH` | Path to the `wayland-info` binary (default: `wayland-info`). Explicit paths are used as-is and not downloaded unless enabled   |
+| `-o, --pull-once`  | If `wayland-info` is missing from PATH, download it once into the cache; never check for or apply updates |
+| `-n, --never-pull` | Never download `wayland-info`; only use a system-installed or already-cached copy |
+| `-p, --pull`       | Explicitly enable auto-update pulling (default behavior); mainly overrides the no-download default of `-w` |
 
-### Examples
+### Pull modes
+
+If `wayland-info` is not installed on the system, wlpdisplays can fetch a
+precompiled binary straight from the official Debian pool (`wayland-utils`
+package, `.deb`) and cache it in `~/.cache/wlpdisplays/bin/`. Extraction is
+pure Python, no `dpkg`/`ar` needed. The flags select one of three modes:
+
+| Flag / default        | Behavior                                                                       |
+| --------------------- | ------------------------------------------------------------------------------ |
+| *(default)* / `-p, --pull` | Use/download the cached copy; check Debian for newer versions at most **once per day** and re-download if a newer release exists. |
+| `-o, --pull-once`     | Download only if the download target has no copy yet; never updates afterwards. |
+| `-n, --never-pull`    | Never touch the network; only use a system-installed or already-cached binary.  |
+
+When `-w, --wayland-info-path PATH` is given, that path is used as-is —
+no downloading by default. Combine it with `-o` for a one-time pull or with
+`-p` to restore the full auto-update behavior.
+
+Pull state (last pull time as unix timestamp, last version pulled, source URL)
+is stored in `~/.cache/wlpdisplays/wayland-info.json`. Set
+`WLPDISPLAYS_CACHE_DIR` to relocate that directory.
 
 ```bash
-# Normal usage
+# Default: auto-pull + daily update checks
 wlpdisplays
+
+# Pull once, then never go online again
+wlpdisplays --pull-once
+
+# Fully offline: fail instead of downloading
+wlpdisplays --never-pull
 
 # Sorted, compact output
 wlpdisplays --sort --compact
@@ -83,14 +112,21 @@ wlpdisplays --sort --compact
 wlpdisplays --stdin < waylandinfo-streaming-raw-out.log
 ```
 
+> **Note:** downloaded binaries come from Debian's package repository over
+> HTTPS but are not signature-verified locally. If that matters for your
+> threat model, install `wayland-utils` through your distro's package manager
+> instead (it takes precedence over any cached copy).
+
 ---
 
 ## Requirements
 
 - Python 3.9+
-- `wayland-info` (from `wayland-utils`) — not needed when using `--stdin`
+- `wayland-info` (from `wayland-utils`) — optional: if missing, it is
+  auto-pulled from the Debian repos unless `--never-pull` is set; also not
+  needed when using `--stdin`
 
-Install on Arch Linux:
+If your distro ships it, installing via the package manager is preferred:
 
 ```bash
 sudo pacman -S wayland-utils
@@ -178,8 +214,23 @@ monitors = wlp.get_outputs(raw=raw)
 # Sort top-left to bottom-right
 monitors = wlp.get_outputs(raw=raw, sort=True)
 
+# Control how a missing wayland-info is obtained:
+#   omitted:         "update" for the default name, offline-safe for
+#                    explicit binary= paths (like the CLI's -w)
+#   None / "update": force auto-update pulling (also for explicit paths)
+#   True / "once":   first-time pull only, never updates
+#   False / "never": no network at all
+monitors = wlp.get_outputs(pull=False)
+
 # Compact, single-line JSON — the library equivalent of the -c flag
 print(wlp.to_json(monitors, compact=True))
+
+# Just resolve a runnable wayland-info path (system PATH -> cache -> download)
+path = wlp.ensure_wayland_info(pull="update")
+
+# Explicit paths are used as-is and NOT downloaded by default;
+# pass pull=None to still enable the cache/download chain:
+path = wlp.ensure_wayland_info("/opt/bin/wayland-info", pull=None)
 ```
 
 The data and formatting steps are separate, so you can grab monitor dicts,  
@@ -195,12 +246,13 @@ Public API:
 
 | Function                    | Description                                                      |
 | --------------------------- | ---------------------------------------------------------------- |
-| `get_outputs(raw=None, *, sort=False, binary="wayland-info")` | Get monitor dicts; pass `raw` to skip running `wayland-info` |
+| `get_outputs(raw=None, *, sort=False, binary="wayland-info", pull=...)` | Get monitor dicts; pass `raw` to skip running `wayland-info`; omitted `pull` = auto for the default name, offline-safe for explicit paths; also accepts `None`/`"update"`, `True`/`"once"`, `False`/`"never"` |
 | `to_json(outputs, *, compact=False)`                          | Serialize monitor dicts to JSON (one line when `compact`)    |
-| `run_wayland_info(binary="wayland-info")`                     | Run `wayland-info` (or `binary`) and return its raw output   |
+| `run_wayland_info(binary="wayland-info", *, pull=...)`   | Run `wayland-info` (or `binary`) and return its raw output   |
+| `ensure_wayland_info(binary="wayland-info", *, pull=...)` | Resolve a runnable binary path, pulling from Debian if needed |
 | `parse_wayland_info(raw)`   | Parse raw `wayland-info` text into `(wl_outputs, xdg_outputs)`    |
 | `merge_outputs(...)`        | Merge parsed `wl_output` + `xdg_output_v1` data into one list     |
-| `WaylandInfoError`          | Raised when `wayland-info` cannot be run                          |
+| `WaylandInfoError`          | Raised when `wayland-info` cannot be run or pulled                |
 
 > **Note:** when used as a library, failures raise `WaylandInfoError` instead of exiting the process. The `wlpdisplays` CLI still exits with an error message.
 
